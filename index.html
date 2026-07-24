@@ -443,6 +443,9 @@ body{
 
   <div class="section-title">⏰ 远期 Deadline <span class="count-badge" id="deadlineBadge">0</span></div>
   <div id="deadlineTasks"><div class="empty-state">✅ 暂无远期 deadline</div></div>
+
+  <div class="section-title" id="historySection" style="display:none">📋 历史已完成 <span class="count-badge" id="historyBadge">0</span></div>
+  <div id="historyTasks"></div>
 </div>
 
 <div class="action-bar">
@@ -480,55 +483,47 @@ body{
 
 <div class="toast" id="toast"></div>
 
+
 <script>
 const STORAGE_PREFIX = 'danielle-board-';
 const PRIORITY_MAP = {high:'red',normal:'yellow',low:'green'};
 const PRIORITY_LABELS = {high:'高优',normal:'普通',low:'低优'};
 const PRIORITY_ORDER = ['high','normal','low'];
 
-let appData = {
-  date: '',
-  tasks: [],
-  projects: [],
-  memos: {},
-  panelOrder: [],
-  migratedFrom: null
-};
-
+let appData = {date:'',tasks:[],projects:[],memos:{},panelOrder:[],migratedFrom:null};
 let toastTimer;
 function showToast(msg,err){
-  const t=document.getElementById('toast');
+  const t=document.getElementById('toast');if(!t)return;
   t.textContent=msg;t.className='toast'+(err?' error':'');
   t.classList.add('show');clearTimeout(toastTimer);
-  toastTimer=setTimeout(()=>t.classList.remove('show'),1800);
+  toastTimer=setTimeout(()=>t.classList.remove('show'),1500);
 }
 
+// ======== 存储 ========
 function getStorageKey(date){return STORAGE_PREFIX+date}
+function todayStr(){return new Date().toISOString().slice(0,10)}
+function getYesterdayStr(){const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10)}
+function nextId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
 
 function loadStorage(){
   try{
-    const today=todayStr();
-    appData.date=today;
+    const today=todayStr();appData.date=today;
     const raw=localStorage.getItem(getStorageKey(today));
-    if(raw){
-      const parsed=JSON.parse(raw);
-      appData={...appData,...parsed,date:today};
-    }
-  }catch(e){console.error('loadStorage error',e)}
+    if(raw){const p=JSON.parse(raw);appData={date:today,tasks:p.tasks||[],projects:p.projects||[],memos:p.memos||{},panelOrder:p.panelOrder||[],migratedFrom:p.migratedFrom||null}}
+  }catch(e){}
 }
-
 function saveStorage(){
-  try{localStorage.setItem(getStorageKey(appData.date),JSON.stringify(appData))}
-  catch(e){showToast('保存失败',true)}
+  try{localStorage.setItem(getStorageKey(appData.date),JSON.stringify(appData))}catch(e){}
 }
 
-function getYesterdayStr(){
-  const d=new Date();d.setDate(d.getDate()-1);
-  return d.toISOString().slice(0,10);
+function normalizeData(){
+  appData.tasks=appData.tasks||[];appData.projects=appData.projects||[];
+  appData.memos=appData.memos||{};appData.panelOrder=appData.panelOrder||[];
+  Object.keys(appData.memos).forEach(p=>{if(!appData.projects.includes(p)&&!appData.tasks.some(t=>t.project===p))delete appData.memos[p]});
 }
 
-// 7月23日遗留任务（从原看板手动迁移）- 含已完成的历史记录
-const MIGRATED_FROM_0723 = [
+// ======== 7月23日迁移数据 ========
+const MIGRATED_FROM_0723=[
   {id:'m0723_1',title:'何刚提车8月10日发布',priority:'normal',note:'',deadline:null,project:'何刚总提车',status:'pending',created_at:'2026-07-23 18:38:04',order:0},
   {id:'m0723_2',title:'【成都车展】确认官方内容规划',priority:'normal',note:'',deadline:null,project:'🚗 成都车展',status:'pending',created_at:'2026-07-23 09:30:59',order:0},
   {id:'m0723_3',title:'小红书资源筛选确认，方片内容策划',priority:'normal',note:'',deadline:null,project:'🦋 闪蝶蓝',status:'pending',created_at:'2026-07-23 09:23:06',order:0},
@@ -536,532 +531,344 @@ const MIGRATED_FROM_0723 = [
   {id:'m0723_5',title:'【双后视镜】锁定拍摄车辆',priority:'high',note:'',deadline:null,project:'🪞 双后视镜',status:'pending',created_at:'2026-07-23 11:01:27',order:1},
   {id:'m0723_6',title:'双后视镜海报',priority:'high',note:'小白',deadline:null,project:'🪞 双后视镜',status:'pending',created_at:'2026-07-23 10:24:26',order:2},
 ];
-// 7月23日已完成任务（保留历史记录展示在底部）
-const DONE_FROM_0723 = [
+const DONE_FROM_0723=[
   {id:'mdone0723_1',title:'【成都车展】参展人员提报（含供应商，需完成二维码注册）',priority:'normal',note:'',deadline:null,project:'🚗 成都车展',status:'done',created_at:'2026-07-23',order:99},
   {id:'mdone0723_2',title:'微博直发资源下单（蓝V）',priority:'normal',note:'',deadline:null,project:'🦋 闪蝶蓝',status:'done',created_at:'2026-07-23',order:99},
 ];
-const MIGRATED_PROJECTS_0723 = ['何刚总提车','🚗 成都车展','🦋 闪蝶蓝','🪞 双后视镜'];
-const MIGRATED_MEMOS_0723 = {
-  '🦋 闪蝶蓝': '【已下单】 原创59w（朱朱+魏sir+阿飞） 三车头条21w 【待下单】 直...'
-};
+const MIGRATED_PROJECTS_0723=['何刚总提车','🚗 成都车展','🦋 闪蝶蓝','🪞 双后视镜'];
+const MIGRATED_MEMOS_0723={'🦋 闪蝶蓝':'【已下单】 原创59w（朱朱+魏sir+阿飞） 三车头条21w 【待下单】 直...'};
 
 function autoMigrateYesterday(){
-  const yesterday=getYesterdayStr();
-  let migrated=0;
-
-  // 特殊处理：如果是7月24日且没有从7月23日迁移过，注入预设数据
+  const yesterday=getYesterdayStr();let migrated=0;
   const today=todayStr();
+  // 特殊处理7月24日首次加载
   if(today==='2026-07-24'){
-    const migratedFlag=localStorage.getItem('danielle-migrated-0723');
-    if(!migratedFlag){
+    const flag=localStorage.getItem('danielle-migrated-0723');
+    if(!flag){
       const existingIds=new Set(appData.tasks.map(t=>t.id));
-      MIGRATED_FROM_0723.forEach(t=>{
-        if(!existingIds.has(t.id)){
-          appData.tasks.push({...t, migratedFrom:'2026-07-23'});
-          migrated++;
-        }
-      });
-      DONE_FROM_0723.forEach(t=>{
-        if(!existingIds.has(t.id)){
-          appData.tasks.push({...t, migratedFrom:'2026-07-23'});
-        }
-      });
-      MIGRATED_PROJECTS_0723.forEach(p=>{
-        if(!appData.projects.includes(p)) appData.projects.push(p);
-        if(!appData.panelOrder.includes(p)) appData.panelOrder.push(p);
-      });
-      Object.entries(MIGRATED_MEMOS_0723).forEach(([p,m])=>{
-        if(!appData.memos[p]) appData.memos[p]=m;
-      });
-      appData.migratedFrom='2026-07-23';
-      localStorage.setItem('danielle-migrated-0723','1');
-      saveStorage();
+      MIGRATED_FROM_0723.forEach(t=>{if(!existingIds.has(t.id)){appData.tasks.push({...t,migratedFrom:'2026-07-23'});migrated++;}});
+      DONE_FROM_0723.forEach(t=>{if(!existingIds.has(t.id))appData.tasks.push({...t,migratedFrom:'2026-07-23'});});
+      MIGRATED_PROJECTS_0723.forEach(p=>{if(!appData.projects.includes(p))appData.projects.push(p);if(!appData.panelOrder.includes(p))appData.panelOrder.push(p);});
+      Object.entries(MIGRATED_MEMOS_0723).forEach(([p,m])=>{if(!appData.memos[p])appData.memos[p]=m;});
+      appData.migratedFrom='2026-07-23';localStorage.setItem('danielle-migrated-0723','1');saveStorage();
       return migrated;
     }
   }
-
-  // 日常自动迁移逻辑
-  const key=getStorageKey(yesterday);
-  const raw=localStorage.getItem(key);
-  if(!raw) return 0;
-
+  // 日常迁移
+  const raw=localStorage.getItem(getStorageKey(yesterday));if(!raw)return 0;
   try{
-    const yd=JSON.parse(raw);
-    const undone=yd.tasks.filter(t=>t.status!=='done');
-    if(undone.length===0) return 0;
-
+    const yd=JSON.parse(raw);const undone=yd.tasks.filter(t=>t.status!=='done');if(undone.length===0)return 0;
     const existingIds=new Set(appData.tasks.map(t=>t.id));
-    undone.forEach(t=>{
-      if(!existingIds.has(t.id)){
-        appData.tasks.push({...t, status:'pending', migratedFrom:yesterday});
-        migrated++;
-      }
-    });
-
-    if(migrated>0){
-      appData.migratedFrom=yesterday;
-      saveStorage();
-    }
+    undone.forEach(t=>{if(!existingIds.has(t.id)){appData.tasks.push({...t,status:'pending',migratedFrom:yesterday});migrated++;}});
+    if(migrated>0){appData.migratedFrom=yesterday;saveStorage();}
     return migrated;
-  }catch(e){console.error('migrate error',e);return 0}
+  }catch(e){return 0;}
 }
 
-function nextId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
-
-function todayStr(){return new Date().toISOString().slice(0,10)}
-
-function normalizeData(){
-  appData.tasks=appData.tasks||[];
-  appData.projects=appData.projects||[];
-  appData.memos=appData.memos||{};
-  appData.panelOrder=appData.panelOrder||[];
-  // 清理已完成项目的孤立 memo
-  Object.keys(appData.memos).forEach(p=>{
-    if(!appData.projects.includes(p) && !appData.tasks.some(t=>t.project===p)) delete appData.memos[p];
-  });
-}
-
+// ======== 数据整理 ========
 function getDataShape(){
   const today=todayStr();
-  const allTodayTasks=appData.tasks.filter(t=>!t.deadline || t.deadline===today);
-  const allPendingTasks=appData.tasks.filter(t=>t.status!=='done' && (!t.deadline || t.deadline===today));
-  const allDoneTasks=appData.tasks.filter(t=>t.status==='done');
-  const deadlineTasks=appData.tasks.filter(t=>t.deadline && t.deadline!==today);
+  const allToday=appData.tasks.filter(t=>!t.deadline||t.deadline===today);
+  const pending=allToday.filter(t=>t.status!=='done');
+  const doneToday=allToday.filter(t=>t.status==='done');
+  const deadlineTasks=appData.tasks.filter(t=>t.deadline&&t.deadline!==today);
+  const historyDone=appData.tasks.filter(t=>t.status==='done'&&t.migratedFrom&&t.migratedFrom!==today);
 
-  // 项目分组：包含该项目下的待办 + 已完成（含历史），按 order 排序
   const projectGroups={};
   appData.projects.forEach(p=>{
-    let tasks=appData.tasks.filter(t=>t.project===p && (!t.deadline || t.deadline===today));
+    let tasks=appData.tasks.filter(t=>t.project===p&&(!t.deadline||t.deadline===today));
     tasks.sort((a,b)=>(a.order||0)-(b.order||0));
     projectGroups[p]={tasks,memo:appData.memos[p]||''};
   });
 
-  // 未归类，按 order 排序
-  const noProjectTasks=appData.tasks.filter(t=>!t.project && (!t.deadline || t.deadline===today));
-  noProjectTasks.sort((a,b)=>(a.order||0)-(b.order||0));
+  const noProject=appData.tasks.filter(t=>!t.project&&(!t.deadline||t.deadline===today));
+  noProject.sort((a,b)=>(a.order||0)-(b.order||0));
 
-  return {
-    date: today,
-    project_groups: projectGroups,
-    no_project_tasks: noProjectTasks,
-    deadline_tasks: deadlineTasks,
-    total_today: allPendingTasks.length,
-    done_today: allDoneTasks.filter(t=>!t.migratedFrom || t.migratedFrom===today).length
-  };
+  return{date:today,project_groups:projectGroups,no_project_tasks:noProject,deadline_tasks:deadlineTasks,history_done:historyDone,total_today:allToday.length,done_today:doneToday.length};
 }
 
+// ======== 单任务操作（不重渲染） ========
 function toggleTask(taskId,status){
-  const t=appData.tasks.find(x=>x.id===taskId);
-  if(!t)return;
-  t.status=status==='done'?'pending':'done';
-  saveStorage();
+  const t=appData.tasks.find(x=>x.id===taskId);if(!t)return;
+  t.status=status==='done'?'pending':'done';saveStorage();
+  // 更新单张卡片
+  const card=document.querySelector(`[data-task-id="${taskId}"]`);
+  if(card){card.classList.toggle('done',t.status==='done');card.dataset.status=t.status;
+    const cb=card.querySelector('.checkbox');if(cb)cb.classList.toggle('done',t.status==='done');}
+  refreshStats();
   showToast(t.status==='done'?'✅ 已完成':'🔄 已恢复');
-  loadData();
 }
 
 function cyclePriority(taskId,priority){
-  const t=appData.tasks.find(x=>x.id===taskId);
-  if(!t)return;
-  const idx=PRIORITY_ORDER.indexOf(priority);
-  t.priority=PRIORITY_ORDER[(idx+1)%PRIORITY_ORDER.length];
-  saveStorage();
+  const t=appData.tasks.find(x=>x.id===taskId);if(!t)return;
+  const idx=PRIORITY_ORDER.indexOf(priority);t.priority=PRIORITY_ORDER[(idx+1)%PRIORITY_ORDER.length];saveStorage();
+  const card=document.querySelector(`[data-task-id="${taskId}"]`);
+  if(card){const c=PRIORITY_MAP[t.priority];const light=card.querySelector('.priority-light');const label=card.querySelector('.priority-label');
+    if(light){light.className='priority-light '+c;light.setAttribute('onclick',`event.stopPropagation();cyclePriority('${t.id}','${t.priority}')`);}
+    if(label){label.className='priority-label '+c;label.textContent=PRIORITY_LABELS[t.priority];}}
   showToast(`优先级: ${PRIORITY_LABELS[t.priority]}`);
-  loadData();
 }
 
 function saveField(taskId,field,el){
-  const t=appData.tasks.find(x=>x.id===taskId);
-  if(!t)return;
-  const val=el.textContent.trim();
-  if(!val&&field==='title'){loadData();return}
-  t[field]=val;
-  saveStorage();
-}
-
-function saveProjectName(oldName,el){
-  const newName=el.textContent.trim();
-  if(!newName||newName===oldName){loadData();return}
-  const idx=appData.projects.indexOf(oldName);
-  if(idx>-1) appData.projects[idx]=newName;
-  appData.tasks.forEach(t=>{if(t.project===oldName)t.project=newName});
-  if(appData.memos[oldName]){appData.memos[newName]=appData.memos[oldName];delete appData.memos[oldName]}
-  const pIdx=appData.panelOrder.indexOf(oldName);
-  if(pIdx>-1) appData.panelOrder[pIdx]=newName;
-  saveStorage();
-  showToast('项目已重命名');
-  loadData();
-}
-
-let memoTimer=null;
-function saveProjectMemo(project,el){
-  clearTimeout(memoTimer);
-  memoTimer=setTimeout(()=>{
-    appData.memos[project]=el.value;
-    saveStorage();
-  },500);
+  const t=appData.tasks.find(x=>x.id===taskId);if(!t)return;
+  const val=el.textContent.trim();if(!val&&field==='title'){el.textContent=t.title;return}
+  t[field]=val;saveStorage();
 }
 
 function delTask(taskId){
   if(!confirm('确认删除？'))return;
-  appData.tasks=appData.tasks.filter(t=>t.id!==taskId);
-  saveStorage();
+  appData.tasks=appData.tasks.filter(t=>t.id!==taskId);saveStorage();
+  const card=document.querySelector(`[data-task-id="${taskId}"]`);
+  if(card)card.remove();
+  refreshStats();checkEmptyStates();
   showToast('已删除');
-  loadData();
 }
 
+// ======== 局部刷新（进度+统计，不重渲染列表） ========
+function refreshStats(){
+  const d=getDataShape();
+  document.getElementById('doneCount').textContent=d.done_today;
+  document.getElementById('totalCount').textContent=d.total_today;
+  const pct=d.total_today>0?Math.round(d.done_today/d.total_today*100):0;
+  document.getElementById('progressBar').style.width=pct+'%';
+  const tag=pct===100?'🎉 全部完成！':pct>=50?'💪 过半了，加油！':pct>0?'🚀 继续推进':'☕ 开始干活吧';
+  document.getElementById('progressTag').textContent=tag;
+  document.getElementById('todayBadge').textContent=d.total_today;
+  document.getElementById('deadlineBadge').textContent=d.deadline_tasks.length;
+  document.getElementById('historyBadge').textContent=d.history_done.length;
+  document.getElementById('dragHint').style.display=d.total_today>0?'':'none';
+
+  // 更新项目面板统计
+  document.querySelectorAll('.project-panel').forEach(panel=>{
+    const pn=panel.dataset.project;
+    const tasks=panel.querySelectorAll('.task-card');
+    const done=panel.querySelectorAll('.task-card.done').length;
+    const total=tasks.length;
+    const stats=panel.querySelector('.project-stats');
+    if(stats){stats.innerHTML=`<span class="done-num">${done}</span>/<span>${total}</span>`;}
+  });
+}
+
+function checkEmptyStates(){
+  // 项目面板
+  if(!document.querySelector('#projectPanels .project-panel')){
+    document.getElementById('projectPanels').innerHTML='<div class="empty-state">📁 暂无项目</div>';
+  }
+  // 未归类
+  if(!document.querySelector('#noProjectList .task-card')){
+    document.getElementById('noProjectList').innerHTML='<div class="empty-state" style="padding:12px">拖拽任务到这里</div>';
+  }
+  // deadline
+  if(!document.querySelector('#deadlineTasks .deadline-card')){
+    document.getElementById('deadlineTasks').innerHTML='<div class="empty-state">✅ 暂无远期 deadline</div>';
+  }
+}
+
+// ======== 辅助 ========
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
 
+// ======== 渲染 ========
 function renderPriorityLight(task){
   const c=PRIORITY_MAP[task.priority]||'yellow';
   return `<span class="priority-light ${c}" onclick="event.stopPropagation();cyclePriority('${task.id}','${task.priority}')" title="点击切换优先级"></span>`;
 }
-
 function renderCheckbox(task){
   const cls=task.status==='done'?'done':'';
   return `<div class="checkbox-wrap" onclick="event.stopPropagation();toggleTask('${task.id}','${task.status}')"><div class="checkbox ${cls}"></div></div>`;
 }
-
 function renderTaskCard(task){
-  const isDone=task.status==='done';
-  const cls=['task-card'];if(isDone)cls.push('done');
+  const isDone=task.status==='done';const cls=['task-card'];if(isDone)cls.push('done');
   const c=PRIORITY_MAP[task.priority]||'yellow';
-  const noteHtml=task.note?`<div class="task-note" contenteditable="true"
-    onblur="saveField('${task.id}','note',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(task.note)}</div>`:'';
-
+  const noteHtml=task.note?`<div class="task-note" contenteditable="true" onblur="saveField('${task.id}','note',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(task.note)}</div>`:'';
   return `<li class="${cls.join(' ')}" data-task-id="${task.id}" data-status="${task.status}">
-    ${renderCheckbox(task)}
-    <div class="task-content">
-      <div class="task-title" contenteditable="true"
-        onblur="saveField('${task.id}','title',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(task.title)}</div>
-      <div class="task-meta">
-        ${renderPriorityLight(task)}
-        <span class="priority-label ${c}">${PRIORITY_LABELS[task.priority]}</span>
-      </div>
-      ${noteHtml}
-    </div>
-    <span class="drag-handle" title="拖拽排序">≡</span>
-    <div class="task-actions">
-      <button class="btn-icon del" onclick="event.stopPropagation();delTask('${task.id}')" title="删除">✕</button>
-    </div>
+    ${renderCheckbox(task)}<div class="task-content">
+      <div class="task-title" contenteditable="true" onblur="saveField('${task.id}','title',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(task.title)}</div>
+      <div class="task-meta">${renderPriorityLight(task)}<span class="priority-label ${c}">${PRIORITY_LABELS[task.priority]}</span></div>${noteHtml}
+    </div><span class="drag-handle" title="拖拽排序">≡</span>
+    <div class="task-actions"><button class="btn-icon del" onclick="event.stopPropagation();delTask('${task.id}')" title="删除">✕</button></div>
   </li>`;
 }
-
-function renderProjectMemo(projectName, memoText){
-  const preview = memoText ? memoText.replace(/\n/g,' ').substring(0,40)+(memoText.length>40?'...':'') : '点击添加备忘...';
-  return `<div class="project-memo">
-    <div class="memo-toggle" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.arrow').classList.toggle('open')">
-      <span class="arrow">▶</span> 📝 备忘 <span class="memo-preview">${esc(preview)}</span>
-    </div>
-    <div class="memo-content">
-      <textarea class="memo-editor" placeholder="输入项目备忘..."
-        oninput="saveProjectMemo('${esc(projectName)}',this)">${esc(memoText)}</textarea>
-      <div class="memo-save-hint">自动保存</div>
-    </div>
-  </div>`;
+function renderProjectMemo(projectName,memoText){
+  const preview=memoText?memoText.replace(/\n/g,' ').substring(0,40)+(memoText.length>40?'...':''):'点击添加备忘...';
+  return `<div class="project-memo"><div class="memo-toggle" onclick="this.nextElementSibling.classList.toggle('open');this.querySelector('.arrow').classList.toggle('open')"><span class="arrow">▶</span> 📝 备忘 <span class="memo-preview">${esc(preview)}</span></div>
+    <div class="memo-content"><textarea class="memo-editor" placeholder="输入项目备忘..." oninput="saveProjectMemo('${esc(projectName)}',this)">${esc(memoText)}</textarea><div class="memo-save-hint">自动保存</div></div></div>`;
 }
-
-function renderDoneDivider(){
-  return '<div class="done-divider"><span>✅ 已完成</span></div>';
-}
-
-function renderProjectPanel(projectName, group){
-  const tasks=group.tasks||[];
-  const memo=group.memo||'';
-  const pending=tasks.filter(t=>t.status!=='done');
-  const done=tasks.filter(t=>t.status==='done');
-  const doneCount=done.length;
-  const total=pending.length+done.length;
-  const hasTasks=total>0;
-
-  let taskHtml='';
-  if(pending.length) taskHtml+=pending.map(renderTaskCard).join('');
-  if(done.length) taskHtml+=renderDoneDivider()+done.map(renderTaskCard).join('');
-
-  const memoHtml = renderProjectMemo(projectName, memo);
-
+function renderDoneDivider(){return '<div class="done-divider"><span>✅ 已完成</span></div>';}
+function renderProjectPanel(projectName,group){
+  const tasks=group.tasks||[];const memo=group.memo||'';
+  const pending=tasks.filter(t=>t.status!=='done');const done=tasks.filter(t=>t.status==='done');
+  let taskHtml='';if(pending.length)taskHtml+=pending.map(renderTaskCard).join('');
+  if(done.length)taskHtml+=renderDoneDivider()+done.map(renderTaskCard).join('');
+  const memoHtml=renderProjectMemo(projectName,memo);
   return `<div class="project-panel" data-project="${esc(projectName)}">
-    <div class="project-header${hasTasks?' has-tasks':''}" onclick="toggleProject(this)">
+    <div class="project-header${tasks.length>0?' has-tasks':''}" onclick="toggleProject(this)">
       <span class="project-drag-handle" title="拖拽项目排序" onclick="event.stopPropagation()">⋮⋮</span>
       <span class="project-collapse open">▶</span>
-      <span class="project-name" contenteditable="true"
-        onblur="saveProjectName('${esc(projectName)}',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
-        onclick="event.stopPropagation()">${esc(projectName)}</span>
-      <span class="project-stats">
-        <span class="done-num">${doneCount}</span>/<span>${total}</span>
-      </span>
+      <span class="project-name" contenteditable="true" onblur="saveProjectName('${esc(projectName)}',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}" onclick="event.stopPropagation()">${esc(projectName)}</span>
+      <span class="project-stats"><span class="done-num">${done.length}</span>/<span>${tasks.length}</span></span>
     </div>
-    <div class="project-body open">
-      <ul class="sortable-list project-task-list" data-project="${esc(projectName)}">${taskHtml}</ul>
-      ${memoHtml}
-    </div>
+    <div class="project-body open"><ul class="sortable-list project-task-list" data-project="${esc(projectName)}">${taskHtml}</ul>${memoHtml}</div>
   </div>`;
 }
-
 function toggleProject(header){
-  const body=header.nextElementSibling;
-  const arrow=header.querySelector('.project-collapse');
-  body.classList.toggle('open');
-  arrow.classList.toggle('open');
+  const body=header.nextElementSibling;const arrow=header.querySelector('.project-collapse');
+  body.classList.toggle('open');arrow.classList.toggle('open');
 }
-
 function renderDeadlineTasks(tasks){
-  if(!tasks.length) return '<div class="empty-state">✅ 暂无远期 deadline</div>';
-  const pending=tasks.filter(t=>t.status!=='done');
-  const done=tasks.filter(t=>t.status==='done');
-  const sorted=[...pending,...done];
-
-  return sorted.map(t=>{
+  if(!tasks.length)return'<div class="empty-state">✅ 暂无远期 deadline</div>';
+  const pending=tasks.filter(t=>t.status!=='done');const done=tasks.filter(t=>t.status==='done');
+  return[...pending,...done].map(t=>{
     const dl=t.deadline||'',days=Math.ceil((new Date(dl)-new Date())/(864e5));
-    const c=PRIORITY_MAP[t.priority]||'yellow';
-    const isDone=t.status==='done';
-    const cls=['deadline-card'];if(isDone)cls.push('done');
-
-    return `<div class="${cls.join(' ')}">
-      ${renderCheckbox(t)}
-      ${renderPriorityLight(t)}
-      <div style="flex:1;min-width:0">
-        <div class="task-title" contenteditable="true"
-          onblur="saveField('${t.id}','title',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(t.title)}</div>
-      </div>
-      <div class="deadline-date">${dl}</div>
-      <div class="deadline-info">${isDone?'✅ 已完成':days+'天后'}</div>
+    const c=PRIORITY_MAP[t.priority]||'yellow';const isDone=t.status==='done';
+    return `<div class="deadline-card${isDone?' done':''}">
+      ${renderCheckbox(t)}${renderPriorityLight(t)}
+      <div style="flex:1;min-width:0"><div class="task-title" contenteditable="true" onblur="saveField('${t.id}','title',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(t.title)}</div></div>
+      <div class="deadline-date">${dl}</div><div class="deadline-info">${isDone?'✅ 已完成':days+'天后'}</div>
       <button class="btn-icon del" onclick="event.stopPropagation();delTask('${t.id}')" title="删除">✕</button>
     </div>`;
   }).join('');
 }
 
-function updateProgress(done,total){
-  document.getElementById('doneCount').textContent=done;
-  document.getElementById('totalCount').textContent=total;
-  const pct=total>0?Math.round(done/total*100):0;
-  document.getElementById('progressBar').style.width=pct+'%';
-  const tag=pct===100?'🎉 全部完成！':pct>=50?'💪 过半了，加油！':pct>0?'🚀 继续推进':'☕ 开始干活吧';
-  document.getElementById('progressTag').textContent=tag;
+// ======== 项目名/备忘保存 ========
+function saveProjectName(oldName,el){
+  const newName=el.textContent.trim();if(!newName||newName===oldName){el.textContent=oldName;return}
+  const idx=appData.projects.indexOf(oldName);if(idx>-1)appData.projects[idx]=newName;
+  appData.tasks.forEach(t=>{if(t.project===oldName)t.project=newName});
+  if(appData.memos[oldName]){appData.memos[newName]=appData.memos[oldName];delete appData.memos[oldName]}
+  const pIdx=appData.panelOrder.indexOf(oldName);if(pIdx>-1)appData.panelOrder[pIdx]=newName;
+  saveStorage();showToast('项目已重命名');
 }
+let memoTimer=null;
+function saveProjectMemo(project,el){clearTimeout(memoTimer);memoTimer=setTimeout(()=>{appData.memos[project]=el.value;saveStorage();},500);}
 
+// ======== 拖拽排序 ========
 let sortables=[];
-
-function buildPanelOrder(dataShape){
-  // 保持面板顺序：优先使用 panelOrder，新增项目追加到末尾
-  const currentProjects=Object.keys(dataShape.project_groups);
-  const ordered=[];
-  appData.panelOrder.forEach(p=>{if(currentProjects.includes(p)&&!ordered.includes(p))ordered.push(p)});
-  currentProjects.forEach(p=>{if(!ordered.includes(p))ordered.push(p)});
-  // 只在有新增项目时才更新 panelOrder，不覆盖已有顺序
-  if(currentProjects.some(p=>!appData.panelOrder.includes(p))){
-    appData.panelOrder=[...ordered];
-  }
-  return ordered;
-}
-
 function rebuildDataFromDOM(){
-  // 从 DOM 重新读取当前顺序和项目归属
   const panels=document.querySelectorAll('.project-panel');
   appData.panelOrder=[];
   panels.forEach(panel=>{
-    const projectName=panel.dataset.project;
-    appData.panelOrder.push(projectName);
-    // 只计算非 done 的任务顺序（已完成的保持原有 order）
+    const projectName=panel.dataset.project;appData.panelOrder.push(projectName);
     const pendingCards=panel.querySelectorAll('.task-card:not(.done)');
     const doneCards=panel.querySelectorAll('.task-card.done');
-    pendingCards.forEach((card,idx)=>{
-      const id=card.dataset.taskId;
-      const t=appData.tasks.find(x=>x.id===id);
-      if(t){t.project=projectName;t.order=idx}
-    });
-    doneCards.forEach((card,idx)=>{
-      const id=card.dataset.taskId;
-      const t=appData.tasks.find(x=>x.id===id);
-      if(t){t.project=projectName;t.order=999+idx}
-    });
+    pendingCards.forEach((card,idx)=>{const t=appData.tasks.find(x=>x.id===card.dataset.taskId);if(t){t.project=projectName;t.order=idx;}});
+    doneCards.forEach((card,idx)=>{const t=appData.tasks.find(x=>x.id===card.dataset.taskId);if(t){t.project=projectName;t.order=999+idx;}});
   });
-  document.querySelectorAll('#noProjectList .task-card').forEach((card,idx)=>{
-    const id=card.dataset.taskId;
-    const t=appData.tasks.find(x=>x.id===id);
-    if(t){t.project=null;t.order=idx}
-  });
+  document.querySelectorAll('#noProjectList .task-card').forEach((card,idx)=>{const t=appData.tasks.find(x=>x.id===card.dataset.taskId);if(t){t.project=null;t.order=idx;}});
   saveStorage();
 }
 
 function initSortables(){
-  sortables.forEach(s=>s.destroy());
-  sortables=[];
-
+  sortables.forEach(s=>s.destroy());sortables=[];
   const panelsEl=document.getElementById('projectPanels');
-  if(panelsEl){
-    const s=new Sortable(panelsEl,{
-      animation:200,
-      handle:'.project-drag-handle',
-      ghostClass:'sortable-ghost',
-      delay:80,delayOnTouchOnly:true,
-      onEnd:function(){
-        rebuildDataFromDOM();
-        showToast('顺序已保存');
-      }
-    });
+  if(panelsEl&&panelsEl.querySelector('.project-panel')){
+    const s=new Sortable(panelsEl,{animation:200,handle:'.project-drag-handle',ghostClass:'sortable-ghost',delay:80,delayOnTouchOnly:true,onEnd:function(){rebuildDataFromDOM();showToast('顺序已保存');}});
     sortables.push(s);
   }
-
   document.querySelectorAll('.project-task-list').forEach(list=>{
-    const s=new Sortable(list,{
-      group:'tasks',
-      animation:200,
-      handle:'.drag-handle',
-      ghostClass:'sortable-ghost',
-      chosenClass:'sortable-chosen',
-      delay:80,delayOnTouchOnly:true,
-      onEnd:function(){rebuildDataFromDOM();showToast('顺序已保存');}
-    });
+    const s=new Sortable(list,{group:'tasks',animation:200,handle:'.drag-handle',ghostClass:'sortable-ghost',chosenClass:'sortable-chosen',delay:80,delayOnTouchOnly:true,onEnd:function(){rebuildDataFromDOM();showToast('顺序已保存');}});
     sortables.push(s);
   });
-
   const npList=document.getElementById('noProjectList');
-  if(npList){
-    const s=new Sortable(npList,{
-      group:'tasks',
-      animation:200,
-      handle:'.drag-handle',
-      ghostClass:'sortable-ghost',
-      chosenClass:'sortable-chosen',
-      delay:80,delayOnTouchOnly:true,
-      onEnd:function(){rebuildDataFromDOM();showToast('顺序已保存');}
-    });
+  if(npList&&npList.querySelector('.task-card')){
+    const s=new Sortable(npList,{group:'tasks',animation:200,handle:'.drag-handle',ghostClass:'sortable-ghost',chosenClass:'sortable-chosen',delay:80,delayOnTouchOnly:true,onEnd:function(){rebuildDataFromDOM();showToast('顺序已保存');}});
     sortables.push(s);
   }
 }
 
-function loadData(){
+function buildPanelOrder(dataShape){
+  const currentProjects=Object.keys(dataShape.project_groups);
+  const ordered=[];
+  appData.panelOrder.forEach(p=>{if(currentProjects.includes(p)&&!ordered.includes(p))ordered.push(p);});
+  currentProjects.forEach(p=>{if(!ordered.includes(p))ordered.push(p);});
+  if(currentProjects.some(p=>!appData.panelOrder.includes(p)))appData.panelOrder=[...ordered];
+  return ordered;
+}
+
+// ======== 全量加载（仅首次/新增任务/新建项目时调用） ========
+function fullRender(){
   try{
     const d=getDataShape();
     document.getElementById('dateBadge').textContent=d.date;
-    document.getElementById('todayBadge').textContent=d.total_today;
-    document.getElementById('deadlineBadge').textContent=d.deadline_tasks.length;
-
     const orderedProjects=buildPanelOrder(d);
     let panelsHtml='';
-    orderedProjects.forEach(pn=>{
-      panelsHtml+=renderProjectPanel(pn,d.project_groups[pn]);
-    });
+    orderedProjects.forEach(pn=>{panelsHtml+=renderProjectPanel(pn,d.project_groups[pn]);});
     document.getElementById('projectPanels').innerHTML=panelsHtml||'<div class="empty-state">📁 暂无项目</div>';
 
     const npTasks=d.no_project_tasks||[];
-    const npPending=npTasks.filter(t=>t.status!=='done');
-    const npDone=npTasks.filter(t=>t.status==='done');
-    let npHtml='';
-    if(npPending.length) npHtml+=npPending.map(renderTaskCard).join('');
-    if(npDone.length) npHtml+=renderDoneDivider()+npDone.map(renderTaskCard).join('');
+    const npPending=npTasks.filter(t=>t.status!=='done');const npDone=npTasks.filter(t=>t.status==='done');
+    let npHtml='';if(npPending.length)npHtml+=npPending.map(renderTaskCard).join('');
+    if(npDone.length)npHtml+=renderDoneDivider()+npDone.map(renderTaskCard).join('');
     document.getElementById('noProjectList').innerHTML=npHtml||'<div class="empty-state" style="padding:12px">拖拽任务到这里</div>';
 
     document.getElementById('deadlineTasks').innerHTML=renderDeadlineTasks(d.deadline_tasks);
-    updateProgress(d.done_today,d.total_today);
-    document.getElementById('dragHint').style.display=d.total_today>0?'':'none';
 
-    const suggest=document.getElementById('projectSuggest');
-    suggest.innerHTML=orderedProjects.map(p=>`<option value="${esc(p)}">`).join('');
+    // 历史已完成区域
+    const histSection=document.getElementById('historySection');
+    const histEl=document.getElementById('historyTasks');
+    const histDone=d.history_done;
+    if(histDone.length>0){
+      histSection.style.display='';
+      let histHtml='<div style="padding:0 0 8px">';
+      histDone.forEach(t=>{histHtml+=`<div class="task-card done" style="background:var(--card);border-radius:var(--radius-sm);margin-bottom:4px;box-shadow:var(--shadow);opacity:0.6">
+        <div class="checkbox done" style="flex-shrink:0;margin-top:2px"></div>
+        <div class="task-content"><div class="task-title" style="text-decoration:line-through;color:var(--text-dim)">${esc(t.title)}</div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:2px">${esc(t.project||'')} · ${t.created_at||''}</div></div>
+      </div>`;});
+      histHtml+='</div>';
+      histEl.innerHTML=histHtml;
+    }else{histSection.style.display='none';histEl.innerHTML='';}
 
+    refreshStats();
     initSortables();
-  }catch(e){
-    console.error(e);
-    document.getElementById('projectPanels').innerHTML='<div class="empty-state">⚠️ 加载失败</div>';
-  }
+  }catch(e){console.error(e);}
 }
 
+// ======== 弹窗 ========
 let modalMode='task';
 function openAddModal(mode){
-  modalMode=mode;
-  const titleEl=document.getElementById('modalTitle');
-  const projField=document.getElementById('modalProject');
-  const projLabel=document.querySelectorAll('.modal label');
-  const taskFields=['modalPriority','modalNote','modalDeadline'];
-  const taskLabels=['优先级','备注','Deadline'];
-
+  modalMode=mode;const titleEl=document.getElementById('modalTitle');const projField=document.getElementById('modalProject');
+  const projLabel=document.querySelectorAll('.modal label');const taskFields=['modalPriority','modalNote','modalDeadline'];const taskLabels=['优先级','备注','Deadline'];
   if(mode==='project'){
-    titleEl.textContent='新建项目';
-    document.getElementById('modalInput').placeholder='输入项目名称...';
-    document.getElementById('modalInput').value='';
-    document.getElementById('modalNote').value='';
-    document.getElementById('modalDeadline').value='';
-    document.getElementById('modalPriority').value='normal';
-    document.getElementById('modalTaskId').value='';
-    document.getElementById('modalTargetProject').value='';
-    projField.style.display='none';
-    projLabel.forEach(l=>{if(l.textContent.includes('所属项目'))l.style.display='none'});
+    titleEl.textContent='新建项目';document.getElementById('modalInput').placeholder='输入项目名称...';document.getElementById('modalInput').value='';
+    document.getElementById('modalNote').value='';document.getElementById('modalDeadline').value='';document.getElementById('modalPriority').value='normal';
+    document.getElementById('modalTaskId').value='';document.getElementById('modalTargetProject').value='';
+    projField.style.display='none';projLabel.forEach(l=>{if(l.textContent.includes('所属项目'))l.style.display='none'});
     taskFields.forEach(id=>document.getElementById(id).style.display='none');
     projLabel.forEach(l=>{taskLabels.forEach(tl=>{if(l.textContent.includes(tl))l.style.display='none'})});
   }else{
-    titleEl.textContent='新增任务';
-    document.getElementById('modalInput').placeholder='输入任务标题...';
-    document.getElementById('modalInput').value='';
-    document.getElementById('modalNote').value='';
-    document.getElementById('modalDeadline').value='';
-    document.getElementById('modalPriority').value='normal';
-    document.getElementById('modalTaskId').value='';
-    document.getElementById('modalTargetProject').value='';
-    projField.style.display='';
-    projField.value='';
-    projLabel.forEach(l=>{if(l.textContent.includes('所属项目'))l.style.display=''});
+    titleEl.textContent='新增任务';document.getElementById('modalInput').placeholder='输入任务标题...';document.getElementById('modalInput').value='';
+    document.getElementById('modalNote').value='';document.getElementById('modalDeadline').value='';document.getElementById('modalPriority').value='normal';
+    document.getElementById('modalTaskId').value='';document.getElementById('modalTargetProject').value='';
+    projField.style.display='';projField.value='';projLabel.forEach(l=>{if(l.textContent.includes('所属项目'))l.style.display=''});
     taskFields.forEach(id=>document.getElementById(id).style.display='');
     projLabel.forEach(l=>{taskLabels.forEach(tl=>{if(l.textContent.includes(tl))l.style.display=''})});
   }
-  document.getElementById('modalOverlay').style.display='flex';
-  document.getElementById('modalInput').focus();
+  document.getElementById('modalOverlay').style.display='flex';document.getElementById('modalInput').focus();
 }
-
-function closeModal(){document.getElementById('modalOverlay').style.display='none'}
-
+function closeModal(){document.getElementById('modalOverlay').style.display='none';}
 function submitModal(){
-  const title=document.getElementById('modalInput').value.trim();
-  if(!title){showToast('请输入内容',true);return}
-
+  const title=document.getElementById('modalInput').value.trim();if(!title){showToast('请输入内容',true);return}
   if(modalMode==='project'){
-    const project=title;
-    if(appData.projects.includes(project)){showToast('项目已存在',true);return}
-    appData.projects.push(project);
-    appData.memos[project]='';
-    if(!appData.panelOrder.includes(project)) appData.panelOrder.push(project);
-    saveStorage();
-    showToast(`项目 "${project}" 已创建`);
-    closeModal();
-    loadData();
+    const project=title;if(appData.projects.includes(project)){showToast('项目已存在',true);return}
+    appData.projects.push(project);appData.memos[project]='';if(!appData.panelOrder.includes(project))appData.panelOrder.push(project);
+    saveStorage();showToast(`项目 "${project}" 已创建`);closeModal();fullRender();
   }else{
-    const note=document.getElementById('modalNote').value.trim();
-    const deadline=document.getElementById('modalDeadline').value||null;
-    const priority=document.getElementById('modalPriority').value;
-    const project=document.getElementById('modalProject').value.trim()||null;
-
-    if(project && !appData.projects.includes(project)){
-      appData.projects.push(project);
-      appData.memos[project]='';
-      appData.panelOrder.push(project);
-    }
-
-    appData.tasks.push({
-      id: nextId(),
-      title,
-      priority,
-      note,
-      deadline,
-      project,
-      status: 'pending',
-      created_at: todayStr(),
-      order: 0
-    });
-    saveStorage();
-    showToast('任务已添加');
-    closeModal();
-    loadData();
+    const note=document.getElementById('modalNote').value.trim();const deadline=document.getElementById('modalDeadline').value||null;
+    const priority=document.getElementById('modalPriority').value;const project=document.getElementById('modalProject').value.trim()||null;
+    if(project&&!appData.projects.includes(project)){appData.projects.push(project);appData.memos[project]='';appData.panelOrder.push(project);}
+    appData.tasks.push({id:nextId(),title,priority,note,deadline,project,status:'pending',created_at:todayStr(),order:appData.tasks.length});
+    saveStorage();showToast('任务已添加');closeModal();fullRender();
   }
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
+
+// ======== 启动 ========
 loadStorage();
 normalizeData();
 const migratedCount=autoMigrateYesterday();
-loadData();
-if(migratedCount>0){
-  setTimeout(()=>showToast(`📋 已从 ${getYesterdayStr()} 迁移 ${migratedCount} 个未完成任务`),300);
-}
+fullRender();
+if(migratedCount>0){setTimeout(()=>showToast(`📋 已从 ${getYesterdayStr()} 迁移 ${migratedCount} 个未完成任务`),300);}
 </script>
 </body>
 </html>
