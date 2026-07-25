@@ -477,9 +477,6 @@ body{
     <ul class="sortable-list" id="noProjectList"><div class="empty-state" style="padding:12px">拖拽任务到这里</div></ul>
   </div>
 
-  <div class="section-title">⏰ 远期 Deadline <span class="count-badge" id="deadlineBadge">0</span></div>
-  <div id="deadlineTasks"><div class="empty-state">✅ 暂无远期 deadline</div></div>
-
   <div class="section-title" id="historySection" style="display:none">📋 历史已完成 <span class="count-badge" id="historyBadge">0</span></div>
   <div id="historyTasks"></div>
 </div>
@@ -627,20 +624,20 @@ function getDataShape(){
   const allToday=appData.tasks.filter(t=>!t.deadline||t.deadline===today);
   const pending=allToday.filter(t=>t.status!=='done');
   const doneToday=allToday.filter(t=>t.status==='done');
-  const deadlineTasks=appData.tasks.filter(t=>t.deadline&&t.deadline!==today);
   const historyDone=appData.tasks.filter(t=>t.status==='done'&&t.migratedFrom&&t.migratedFrom!==today);
 
   const projectGroups={};
   appData.projects.forEach(p=>{
-    let tasks=appData.tasks.filter(t=>t.project===p&&(!t.deadline||t.deadline===today));
+    // 所有属于该项目的任务（含deadline任务）
+    let tasks=appData.tasks.filter(t=>t.project===p);
     tasks.sort((a,b)=>(a.order||0)-(b.order||0));
     projectGroups[p]={tasks,memo:appData.memos[p]||''};
   });
 
-  const noProject=appData.tasks.filter(t=>!t.project&&(!t.deadline||t.deadline===today));
+  const noProject=appData.tasks.filter(t=>!t.project);
   noProject.sort((a,b)=>(a.order||0)-(b.order||0));
 
-  return{date:today,project_groups:projectGroups,no_project_tasks:noProject,deadline_tasks:deadlineTasks,history_done:historyDone,total_today:allToday.length,done_today:doneToday.length};
+  return{date:today,project_groups:projectGroups,no_project_tasks:noProject,history_done:historyDone,total_today:allToday.length,done_today:doneToday.length};
 }
 
 // ======== 单任务操作（不重渲染） ========
@@ -710,7 +707,6 @@ function refreshStats(){
   const tag=pct===100?'🎉 全部完成！':pct>=50?'💪 过半了，加油！':pct>0?'🚀 继续推进':'☕ 开始干活吧';
   document.getElementById('progressTag').textContent=tag;
   document.getElementById('todayBadge').textContent=d.total_today;
-  document.getElementById('deadlineBadge').textContent=d.deadline_tasks.length;
   document.getElementById('historyBadge').textContent=d.history_done.length;
   document.getElementById('dragHint').style.display=d.total_today>0?'':'none';
 
@@ -734,10 +730,6 @@ function checkEmptyStates(){
   if(!document.querySelector('#noProjectList .task-card')){
     document.getElementById('noProjectList').innerHTML='<div class="empty-state" style="padding:12px">拖拽任务到这里</div>';
   }
-  // deadline
-  if(!document.querySelector('#deadlineTasks .deadline-card')){
-    document.getElementById('deadlineTasks').innerHTML='<div class="empty-state">✅ 暂无远期 deadline</div>';
-  }
 }
 
 // ======== 辅助 ========
@@ -756,10 +748,11 @@ function renderTaskCard(task){
   const isDone=task.status==='done';const cls=['task-card'];if(isDone)cls.push('done');
   const c=PRIORITY_MAP[task.priority]||'yellow';
   const noteHtml=task.note?`<div class="task-note" contenteditable="true" onblur="saveField('${task.id}','note',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(task.note)}</div>`:'';
+  const deadlineHtml=task.deadline?`<span style="font-size:11px;color:var(--yellow);font-weight:600;margin-left:4px">📅 ${task.deadline}</span>`:'';
   return `<li class="${cls.join(' ')}" data-task-id="${task.id}" data-status="${task.status}">
     ${renderCheckbox(task)}<div class="task-content">
       <div class="task-title" contenteditable="true" onblur="saveField('${task.id}','title',this)" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">${esc(task.title)}</div>
-      <div class="task-meta">${renderPriorityLight(task)}<span class="priority-label ${c}">${PRIORITY_LABELS[task.priority]}</span></div>${noteHtml}
+      <div class="task-meta">${renderPriorityLight(task)}<span class="priority-label ${c}">${PRIORITY_LABELS[task.priority]}</span>${deadlineHtml}</div>${noteHtml}
     </div><span class="drag-handle" title="拖拽排序">≡</span>
     <div class="task-actions">
       <span class="task-edit-dot" onclick="event.stopPropagation();openEditModal('${task.id}')" title="编辑">⋯</span>
@@ -898,8 +891,6 @@ function fullRender(){
     let npHtml='';if(npPending.length)npHtml+=npPending.map(renderTaskCard).join('');
     if(npDone.length)npHtml+=renderDoneDivider()+npDone.map(renderTaskCard).join('');
     document.getElementById('noProjectList').innerHTML=npHtml||'<div class="empty-state" style="padding:12px">拖拽任务到这里</div>';
-
-    document.getElementById('deadlineTasks').innerHTML=renderDeadlineTasks(d.deadline_tasks);
 
     // 历史已完成区域
     const histSection=document.getElementById('historySection');
