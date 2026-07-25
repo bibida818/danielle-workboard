@@ -461,7 +461,7 @@ body{
 
   <div class="progress-section">
     <div class="progress-header">
-      <span class="label"><span class="sync-dot"></span>今日进度</span>
+      <span class="label"><span class="sync-dot" id="syncDot"></span>今日进度</span>
       <span class="count"><span class="done-num" id="doneCount">0</span> / <span id="totalCount">0</span></span>
     </div>
     <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressBar" style="width:0%"></div></div>
@@ -526,12 +526,14 @@ body{
 
 <script>
 const STORAGE_PREFIX = 'danielle-board-';
+const JSONBLOB_URL = 'https://jsonblob.com/api/jsonBlob/019f984d-537a-78fc-8399-52c26b1df3e7';
 const PRIORITY_MAP = {high:'red',normal:'yellow',low:'green'};
 const PRIORITY_LABELS = {high:'高优',normal:'普通',low:'低优'};
 const PRIORITY_ORDER = ['high','normal','low'];
 
-let appData = {date:'',tasks:[],projects:[],memos:{},panelOrder:[],migratedFrom:null};
+let appData = {date:'',tasks:[],projects:[],memos:{},panelOrder:[],migratedFrom:null,lastModified:0};
 let toastTimer;
+let syncStatus = 'local'; // 'local' | 'syncing' | 'synced' | 'error'
 function showToast(msg,err){
   const t=document.getElementById('toast');if(!t)return;
   t.textContent=msg;t.className='toast'+(err?' error':'');
@@ -539,21 +541,109 @@ function showToast(msg,err){
   toastTimer=setTimeout(()=>t.classList.remove('show'),1500);
 }
 
-// ======== 存储 ========
+// ======== 存储（localStorage + jsonblob 跨设备同步） ========
 function getStorageKey(date){return STORAGE_PREFIX+date}
 function todayStr(){return new Date().toISOString().slice(0,10)}
 function getYesterdayStr(){const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10)}
 function nextId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
 
-function loadStorage(){
-  try{
-    const today=todayStr();appData.date=today;
-    const raw=localStorage.getItem(getStorageKey(today));
-    if(raw){const p=JSON.parse(raw);appData={date:today,tasks:p.tasks||[],projects:p.projects||[],memos:p.memos||{},panelOrder:p.panelOrder||[],migratedFrom:p.migratedFrom||null}}
-  }catch(e){}
+// 同步状态指示器更新
+function updateSyncDot(status){
+  syncStatus=status;
+  const dot=document.getElementById('syncDot');
+  if(!dot)return;
+  dot.className='sync-dot';
+  if(status==='syncing')dot.style.background='var(--yellow)';
+  else if(status==='synced')dot.style.background='var(--done)';
+  else if(status==='error')dot.style.background='var(--red)';
+  else dot.style.background='var(--text-dim)';
 }
-function saveStorage(){
+
+// 从 jsonblob 拉取远程数据
+async function fetchRemote(){
+  try{
+    const resp=await fetch(JSONBLOB_URL,{method:'GET',headers:{'Accept':'application/json'},cache:'no-store'});
+    if(!resp.ok)return null;
+    const data=await resp.json();
+    return data&&data.tasks?data:null;
+  }catch(e){return null;}
+}
+
+// 推送到 jsonblob
+async function pushRemote(data){
+  try{
+    const resp=await fetch(JSONBLOB_URL,{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(data)
+    });
+    return resp.ok;
+  }catch(e){return false;}
+}
+
+// 合并本地与远程数据（以 lastModified 为准，取最新）
+function mergeData(local,remote){
+  if(!remote||!remote.lastModified)return local;
+  if(!local.lastModified)return remote;
+  return (remote.lastModified>=local.lastModified)?remote:local;
+}
+
+// 加载数据：优先远程 → fallback localStorage
+async function loadStorage(){
+  const today=todayStr();appData.date=today;
+  updateSyncDot('syncing');
+
+  // 1. 尝试从 jsonblob 拉取
+  const remote=await fetchRemote();
+
+  // 2. 读取本地 localStorage
+  let localData=null;
+  try{
+    const raw=localStorage.getItem(getStorageKey(today));
+    if(raw)localData=JSON.parse(raw);
+  }catch(e){}
+
+  // 3. 合并（取最新）
+  const merged=mergeData(localData,remote);
+  if(merged&&merged.tasks){
+    appData={date:today,tasks:merged.tasks||[],projects:merged.projects||[],memos:merged.memos||{},panelOrder:merged.panelOrder||[],migratedFrom:merged.migratedFrom||null,lastModified:merged.lastModified||0};
+    updateSyncDot(remote?'synced':'local');
+    // 如果远程比本地新，更新 localStorage
+    if(remote&&remote.lastModified&&(!localData||remote.lastModified>localData.lastModified)){
+      localStorage.setItem(getStorageKey(today),JSON.stringify(merged));
+    }
+  }else if(localData){
+    appData={date:today,tasks:localData.tasks||[],projects:localData.projects||[],memos:localData.memos||{},panelOrder:localData.panelOrder||[],migratedFrom:localData.migratedFrom||null,lastModified:localData.lastModified||0};
+    updateSyncDot('local');
+  }else{
+    updateSyncDot('local');
+  }
+}
+
+// 保存数据：同时写 localStorage + jsonblob（带防抖）
+let saveTimer=null;
+function saveStorage(immediate){
+  // 更新时间戳
+  appData.lastModified=Date.now();
+
+  // 写入 localStorage（始终立即执行）
   try{localStorage.setItem(getStorageKey(appData.date),JSON.stringify(appData))}catch(e){}
+
+  // 写入 jsonblob（防抖 500ms，避免频繁 API 调用）
+  const doPush=()=>{
+    updateSyncDot('syncing');
+    const payload={date:appData.date,tasks:appData.tasks,projects:appData.projects,memos:appData.memos,panelOrder:appData.panelOrder,migratedFrom:appData.migratedFrom,lastModified:appData.lastModified};
+    pushRemote(payload).then(ok=>{
+      updateSyncDot(ok?'synced':'error');
+    });
+  };
+
+  if(immediate){
+    clearTimeout(saveTimer);
+    doPush();
+  }else{
+    clearTimeout(saveTimer);
+    saveTimer=setTimeout(doPush,500);
+  }
 }
 
 function normalizeData(){
@@ -591,7 +681,7 @@ function autoMigrateYesterday(){
       DONE_FROM_0723.forEach(t=>{if(!existingIds.has(t.id))appData.tasks.push({...t,migratedFrom:'2026-07-23'});});
       MIGRATED_PROJECTS_0723.forEach(p=>{if(!appData.projects.includes(p))appData.projects.push(p);if(!appData.panelOrder.includes(p))appData.panelOrder.push(p);});
       Object.entries(MIGRATED_MEMOS_0723).forEach(([p,m])=>{if(!appData.memos[p])appData.memos[p]=m;});
-      appData.migratedFrom='2026-07-23';localStorage.setItem('danielle-migrated-0723','1');saveStorage();
+      appData.migratedFrom='2026-07-23';localStorage.setItem('danielle-migrated-0723','1');saveStorage(true);
       return migrated;
     }
   }
@@ -604,7 +694,7 @@ function autoMigrateYesterday(){
       if(undone.length>0){
         const existingIds=new Set(appData.tasks.map(t=>t.id));
         undone.forEach(t=>{if(!existingIds.has(t.id)){appData.tasks.push({...t,status:'pending',migratedFrom:yesterday});migrated++;}});
-        if(migrated>0){appData.migratedFrom=yesterday;saveStorage();return migrated;}
+        if(migrated>0){appData.migratedFrom=yesterday;saveStorage(true);return migrated;}
       }
     }catch(e){}
   }
@@ -1001,7 +1091,7 @@ function submitModal(){
   if(modalMode==='project'){
     const project=title;if(appData.projects.includes(project)){showToast('项目已存在',true);return}
     appData.projects.push(project);appData.memos[project]='';if(!appData.panelOrder.includes(project))appData.panelOrder.push(project);
-    saveStorage();showToast(`项目 "${project}" 已创建`);closeModal();fullRender();
+    saveStorage(true);showToast(`项目 "${project}" 已创建`);closeModal();fullRender();
     return;
   }
 
@@ -1020,22 +1110,42 @@ function submitModal(){
   if(editingTaskId){
     const t=appData.tasks.find(x=>x.id===editingTaskId);
     if(t){t.title=title;t.priority=priority;t.note=note;t.deadline=deadline;t.project=project;}
-    saveStorage();showToast('任务已更新');closeModal();fullRender();
+    saveStorage(true);showToast('任务已更新');closeModal();fullRender();
   }else{
     if(project&&!appData.projects.includes(project)){appData.projects.push(project);appData.memos[project]='';appData.panelOrder.push(project);}
     appData.tasks.push({id:nextId(),title,priority,note,deadline,project,status:'pending',created_at:todayStr(),order:appData.tasks.length});
-    saveStorage();showToast('任务已添加');closeModal();fullRender();
+    saveStorage(true);showToast('任务已添加');closeModal();fullRender();
   }
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
 
 // ======== 启动 ========
-loadStorage();
-normalizeData();
-const migratedCount=autoMigrateYesterday();
-fullRender();
-if(migratedCount>0){setTimeout(()=>showToast(`📋 已从 ${getYesterdayStr()} 迁移 ${migratedCount} 个未完成任务`),300);}
+(async function init(){
+  await loadStorage();
+  normalizeData();
+  const migratedCount=autoMigrateYesterday();
+  fullRender();
+  if(migratedCount>0){setTimeout(()=>showToast(`📋 已从 ${getYesterdayStr()} 迁移 ${migratedCount} 个未完成任务`),300);}
+
+  // 定时后台同步（每 30 秒从远程拉取一次，仅在无本地编辑时）
+  setInterval(async ()=>{
+    if(syncStatus==='syncing')return; // 正在同步中，跳过
+    const remote=await fetchRemote();
+    if(remote&&remote.lastModified&&remote.lastModified>appData.lastModified){
+      // 远程有更新，合并
+      const localData={date:appData.date,tasks:appData.tasks,projects:appData.projects,memos:appData.memos,panelOrder:appData.panelOrder,migratedFrom:appData.migratedFrom,lastModified:appData.lastModified};
+      const merged=mergeData(localData,remote);
+      if(merged.lastModified>appData.lastModified){
+        appData={date:merged.date||appData.date,tasks:merged.tasks,projects:merged.projects,memos:merged.memos,panelOrder:merged.panelOrder,migratedFrom:merged.migratedFrom,lastModified:merged.lastModified};
+        localStorage.setItem(getStorageKey(appData.date),JSON.stringify(appData));
+        fullRender();
+        updateSyncDot('synced');
+        showToast('📡 已同步远程更新');
+      }
+    }
+  },30000);
+})();
 </script>
 </body>
 </html>
