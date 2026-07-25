@@ -315,6 +315,40 @@ body{
 .btn-icon.del:hover{background:rgba(209,82,74,.15);color:var(--red)}
 .btn-icon.edit:hover{background:rgba(212,168,83,.15);color:var(--accent)}
 
+/* 编辑圆点按钮 */
+.task-edit-dot{
+  width:30px;height:30px;border-radius:50%;
+  background:var(--border);color:var(--text-dim);
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:700;cursor:pointer;
+  transition:all .15s;flex-shrink:0;
+  letter-spacing:-1px;line-height:1;
+}
+.task-edit-dot:hover{background:var(--accent);color:#fff;transform:scale(1.08)}
+
+/* 左滑删除区域 */
+.task-card{
+  position:relative;overflow:hidden;
+}
+.task-swipe-delete{
+  position:absolute;top:0;right:-90px;width:80px;height:100%;
+  background:var(--red);color:#fff;
+  display:flex;align-items:center;justify-content:center;
+  font-size:13px;font-weight:600;cursor:pointer;
+  transition:right .25s cubic-bezier(.4,0,.2,1);
+  border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+  z-index:1;
+}
+.task-card.swiped .task-swipe-delete{right:0;}
+.task-card.swiped .task-content,.task-card.swiped .drag-handle,.task-card.swiped .checkbox-wrap,.task-card.swiped .task-actions{
+  transform:translateX(-80px);
+  transition:transform .25s cubic-bezier(.4,0,.2,1);
+}
+.task-card .task-content,.task-card .drag-handle,.task-card .checkbox-wrap,.task-card .task-actions{
+  transform:translateX(0);
+  transition:transform .25s cubic-bezier(.4,0,.2,1);
+}
+
 /* No-project */
 .no-project-area{margin-bottom:14px}
 .no-project-area .sortable-list{list-style:none}
@@ -646,6 +680,26 @@ function delTask(taskId){
   showToast('已删除');
 }
 
+// ======== 左滑删除 ========
+let touchStartX=0,touchStartY=0,touchCard=null;
+document.addEventListener('touchstart',function(e){
+  const card=e.target.closest('.task-card');if(!card||e.target.closest('.drag-handle'))return;
+  touchCard=card;touchStartX=e.touches[0].clientX;touchStartY=e.touches[0].clientY;
+},{passive:true});
+document.addEventListener('touchmove',function(e){
+  if(!touchCard)return;
+  const dx=e.touches[0].clientX-touchStartX;
+  const dy=e.touches[0].clientY-touchStartY;
+  if(Math.abs(dy)>Math.abs(dx)){touchCard=null;return}
+  if(dx<-30){touchCard.classList.add('swiped');touchCard=null;}
+  else if(dx>30){touchCard.classList.remove('swiped');}
+},{passive:true});
+document.addEventListener('click',function(e){
+  if(!e.target.closest('.task-swipe-delete')&&!e.target.closest('.task-card.swiped .task-edit-dot')){
+    document.querySelectorAll('.task-card.swiped').forEach(c=>c.classList.remove('swiped'));
+  }
+});
+
 // ======== 局部刷新（进度+统计，不重渲染列表） ========
 function refreshStats(){
   const d=getDataShape();
@@ -708,9 +762,9 @@ function renderTaskCard(task){
       <div class="task-meta">${renderPriorityLight(task)}<span class="priority-label ${c}">${PRIORITY_LABELS[task.priority]}</span></div>${noteHtml}
     </div><span class="drag-handle" title="拖拽排序">≡</span>
     <div class="task-actions">
-      <button class="btn-icon edit" onclick="event.stopPropagation();openEditModal('${task.id}')" title="编辑">✎</button>
-      <button class="btn-icon del" onclick="event.stopPropagation();delTask('${task.id}')" title="删除">✕</button>
+      <span class="task-edit-dot" onclick="event.stopPropagation();openEditModal('${task.id}')" title="编辑">⋯</span>
     </div>
+    <div class="task-swipe-delete" onclick="event.stopPropagation();delTask('${task.id}')">🗑 删除</div>
   </li>`;
 }
 function renderProjectMemo(projectName,memoText){
