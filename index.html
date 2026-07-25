@@ -541,10 +541,11 @@ const MIGRATED_MEMOS_0723={'🦋 闪蝶蓝':'【已下单】 原创59w（朱朱+
 function autoMigrateYesterday(){
   const yesterday=getYesterdayStr();let migrated=0;
   const today=todayStr();
-  // 特殊处理7月24日首次加载
-  if(today==='2026-07-24'){
-    const flag=localStorage.getItem('danielle-migrated-0723');
-    if(!flag){
+
+  // 种子数据：7月23日未完成任务，在任意>=7月24日的日期首次打开时注入
+  if(today>='2026-07-24'){
+    const seedFlag=localStorage.getItem('danielle-migrated-0723');
+    if(!seedFlag){
       const existingIds=new Set(appData.tasks.map(t=>t.id));
       MIGRATED_FROM_0723.forEach(t=>{if(!existingIds.has(t.id)){appData.tasks.push({...t,migratedFrom:'2026-07-23'});migrated++;}});
       DONE_FROM_0723.forEach(t=>{if(!existingIds.has(t.id))appData.tasks.push({...t,migratedFrom:'2026-07-23'});});
@@ -554,15 +555,27 @@ function autoMigrateYesterday(){
       return migrated;
     }
   }
-  // 日常迁移
-  const raw=localStorage.getItem(getStorageKey(yesterday));if(!raw)return 0;
-  try{
-    const yd=JSON.parse(raw);const undone=yd.tasks.filter(t=>t.status!=='done');if(undone.length===0)return 0;
-    const existingIds=new Set(appData.tasks.map(t=>t.id));
-    undone.forEach(t=>{if(!existingIds.has(t.id)){appData.tasks.push({...t,status:'pending',migratedFrom:yesterday});migrated++;}});
-    if(migrated>0){appData.migratedFrom=yesterday;saveStorage();}
-    return migrated;
-  }catch(e){return 0;}
+
+  // 日常迁移：从前一天localStorage迁移未完成任务
+  const prevKey=getStorageKey(yesterday);const prevRaw=localStorage.getItem(prevKey);
+  if(prevRaw){
+    try{
+      const yd=JSON.parse(prevRaw);const undone=yd.tasks.filter(t=>t.status!=='done');
+      if(undone.length>0){
+        const existingIds=new Set(appData.tasks.map(t=>t.id));
+        undone.forEach(t=>{if(!existingIds.has(t.id)){appData.tasks.push({...t,status:'pending',migratedFrom:yesterday});migrated++;}});
+        if(migrated>0){appData.migratedFrom=yesterday;saveStorage();return migrated;}
+      }
+    }catch(e){}
+  }
+
+  // 备选：如果localStorage没有前一天数据，但appData中还有前一天标记为pending且不在今日的任务，自动迁移
+  if(migrated===0){
+    const oldPending=appData.tasks.filter(t=>t.status!=='done'&&t.migratedFrom&&t.migratedFrom!==today&&t.migratedFrom!=='2026-07-23');
+    // 这些是之前迁移过的，保持现状
+  }
+
+  return migrated;
 }
 
 // ======== 数据整理 ========
