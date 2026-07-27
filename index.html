@@ -461,7 +461,7 @@ body{
 
   <div class="progress-section">
     <div class="progress-header">
-      <span class="label"><span class="sync-dot" id="syncDot"></span>今日进度</span>
+      <span class="label"><span class="sync-dot" id="syncDot" title="同步状态：灰=仅本地 黄=同步中 绿=已同步 红=失败"></span>今日进度 <span class="sync-settings" onclick="showTokenSettings()" title="同步设置" style="font-size:11px;cursor:pointer;opacity:0.5;margin-left:4px">⚙</span></span>
       <span class="count"><span class="done-num" id="doneCount">0</span> / <span id="totalCount">0</span></span>
     </div>
     <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progressBar" style="width:0%"></div></div>
@@ -526,7 +526,8 @@ body{
 
 <script>
 const STORAGE_PREFIX = 'danielle-board-';
-const JSONBLOB_URL = 'https://jsonblob.com/api/jsonBlob/019f984d-537a-78fc-8399-52c26b1df3e7';
+const GIST_ID = '7f40c6979f2a629ac4ced78b24690e67';
+const GIST_FILENAME = 'danielle-workboard-data.json';
 const PRIORITY_MAP = {high:'red',normal:'yellow',low:'green'};
 const PRIORITY_LABELS = {high:'高优',normal:'普通',low:'低优'};
 const PRIORITY_ORDER = ['high','normal','low'];
@@ -534,6 +535,7 @@ const PRIORITY_ORDER = ['high','normal','low'];
 let appData = {date:'',tasks:[],projects:[],memos:{},panelOrder:[],migratedFrom:null,lastModified:0};
 let toastTimer;
 let syncStatus = 'local'; // 'local' | 'syncing' | 'synced' | 'error'
+let ghToken = null; // GitHub Personal Access Token
 function showToast(msg,err){
   const t=document.getElementById('toast');if(!t)return;
   t.textContent=msg;t.className='toast'+(err?' error':'');
@@ -541,11 +543,43 @@ function showToast(msg,err){
   toastTimer=setTimeout(()=>t.classList.remove('show'),1500);
 }
 
-// ======== 存储（localStorage + jsonblob 跨设备同步） ========
+// Token 设置
+function showTokenSettings(){
+  const currentToken=getGhToken();
+  const msg=currentToken
+    ? `当前已配置 Token: ${currentToken.substring(0,8)}...\n\n点击"确定"更换 Token\n点击"取消"关闭`
+    : '未配置 Token，无法跨设备同步。\n\n请输入 GitHub Personal Access Token（需 gist 权限）：';
+  const input=prompt(msg,currentToken?'':undefined);
+  if(input===null)return; // 取消
+  if(input&&input.trim()){
+    ghToken=input.trim();
+    localStorage.setItem('danielle-gh-token',ghToken);
+    showToast('✅ Token 已保存');
+    // 立即同步一次
+    saveStorage(true);
+  }
+}
+
+// ======== 存储（localStorage + GitHub Gist 跨设备同步） ========
 function getStorageKey(date){return STORAGE_PREFIX+date}
 function todayStr(){return new Date().toISOString().slice(0,10)}
 function getYesterdayStr(){const d=new Date();d.setDate(d.getDate()-1);return d.toISOString().slice(0,10)}
 function nextId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
+
+// 获取 GitHub Token（从 localStorage 读取，或弹窗让用户输入）
+function getGhToken(){
+  if(ghToken)return ghToken;
+  ghToken=localStorage.getItem('danielle-gh-token');
+  if(ghToken)return ghToken;
+  // 首次使用，弹窗输入
+  const input=prompt('🔐 请输入 GitHub Personal Access Token（需 gist 权限）\n\n生成地址: https://github.com/settings/tokens\n勾选 gist scope 即可\n\n（仅存储在您浏览器本地，不会上传到任何服务器）');
+  if(input&&input.trim()){
+    ghToken=input.trim();
+    localStorage.setItem('danielle-gh-token',ghToken);
+    return ghToken;
+  }
+  return null;
+}
 
 // 同步状态指示器更新
 function updateSyncDot(status){
@@ -559,22 +593,39 @@ function updateSyncDot(status){
   else dot.style.background='var(--text-dim)';
 }
 
-// 从 jsonblob 拉取远程数据
+// 从 GitHub Gist 拉取远程数据
 async function fetchRemote(){
+  const token=getGhToken();
+  if(!token)return null;
   try{
-    const resp=await fetch(JSONBLOB_URL,{method:'GET',headers:{'Accept':'application/json'},cache:'no-store'});
+    const resp=await fetch(`https://api.github.com/gists/${GIST_ID}`,{
+      headers:{'Authorization':`Bearer ${token}`,'Accept':'application/vnd.github.v3+json'},
+      cache:'no-store'
+    });
     if(!resp.ok)return null;
-    const data=await resp.json();
+    const gist=await resp.json();
+    const file=gist.files&&gist.files[GIST_FILENAME];
+    if(!file||!file.content)return null;
+    const data=JSON.parse(file.content);
     return data&&data.tasks?data:null;
   }catch(e){return null;}
 }
 
-// 推送到 jsonblob
+// 推送到 GitHub Gist
 async function pushRemote(data){
+  const token=getGhToken();
+  if(!token)return false;
   try{
-    const resp=await fetch(JSONBLOB_URL,{
-      method:'PUT',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(data)
+    const resp=await fetch(`https://api.github.com/gists/${GIST_ID}`,{
+      method:'PATCH',
+      headers:{
+        'Authorization':`Bearer ${token}`,
+        'Content-Type':'application/json',
+        'Accept':'application/vnd.github.v3+json'
+      },
+      body:JSON.stringify({
+        files:{[GIST_FILENAME]:{content:JSON.stringify(data,null,2)}}
+      })
     });
     return resp.ok;
   }catch(e){return false;}
@@ -585,17 +636,19 @@ function mergeData(local,remote){
   if(!remote||!remote.lastModified)return local;
   if(!local.lastModified)return remote;
   const winner=(remote.lastModified>=local.lastModified)?remote:local;
-  // 保留 seedInjected 标记（只要有一方注入过就认为已注入）
   winner.seedInjected=local.seedInjected||remote.seedInjected||false;
   return winner;
 }
 
-// 加载数据：优先远程 → fallback localStorage
+// 加载数据：优先远程 Gist → fallback localStorage
 async function loadStorage(){
   const today=todayStr();appData.date=today;
-  updateSyncDot('syncing');
 
-  // 1. 尝试从 jsonblob 拉取
+  // 0. 初始化 token
+  getGhToken();
+
+  // 1. 尝试从 GitHub Gist 拉取
+  updateSyncDot('syncing');
   const remote=await fetchRemote();
 
   // 2. 读取本地 localStorage
@@ -610,7 +663,6 @@ async function loadStorage(){
   if(merged&&merged.tasks){
     appData={date:today,tasks:merged.tasks||[],projects:merged.projects||[],memos:merged.memos||{},panelOrder:merged.panelOrder||[],migratedFrom:merged.migratedFrom||null,lastModified:merged.lastModified||0,seedInjected:merged.seedInjected||false};
     updateSyncDot(remote?'synced':'local');
-    // 如果远程比本地新，更新 localStorage
     if(remote&&remote.lastModified&&(!localData||remote.lastModified>localData.lastModified)){
       localStorage.setItem(getStorageKey(today),JSON.stringify(merged));
     }
@@ -622,17 +674,18 @@ async function loadStorage(){
   }
 }
 
-// 保存数据：同时写 localStorage + jsonblob（带防抖）
+// 保存数据：同时写 localStorage + GitHub Gist（带防抖）
 let saveTimer=null;
 function saveStorage(immediate){
-  // 更新时间戳
   appData.lastModified=Date.now();
 
   // 写入 localStorage（始终立即执行）
   try{localStorage.setItem(getStorageKey(appData.date),JSON.stringify(appData))}catch(e){}
 
-  // 写入 jsonblob（防抖 500ms，避免频繁 API 调用）
+  // 写入 GitHub Gist（防抖 500ms）
   const doPush=()=>{
+    const token=getGhToken();
+    if(!token){updateSyncDot('local');return;}
     updateSyncDot('syncing');
     const payload={date:appData.date,tasks:appData.tasks,projects:appData.projects,memos:appData.memos,panelOrder:appData.panelOrder,migratedFrom:appData.migratedFrom,lastModified:appData.lastModified,seedInjected:appData.seedInjected};
     pushRemote(payload).then(ok=>{
@@ -1133,14 +1186,11 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
   fullRender();
   if(migratedCount>0){setTimeout(()=>showToast(`📋 已从 ${getYesterdayStr()} 迁移 ${migratedCount} 个未完成任务`),300);}
 
-  // 定时后台同步（每 30 秒从远程拉取一次）
-  // 仅当远程 lastModified 明显更新（差 > 2 秒）且本地数据非空时才合并
-  let lastSyncCheck=0;
+  // 定时后台同步（每 30 秒从 Gist 拉取一次）
   setInterval(async ()=>{
     if(syncStatus==='syncing')return;
     const remote=await fetchRemote();
     if(remote&&remote.lastModified&&remote.lastModified>appData.lastModified+2000){
-      // 远程有更新，检查远程是否包含有效数据
       if(!remote.tasks||remote.tasks.length===0)return;
       const localData={date:appData.date,tasks:appData.tasks,projects:appData.projects,memos:appData.memos,panelOrder:appData.panelOrder,migratedFrom:appData.migratedFrom,lastModified:appData.lastModified,seedInjected:appData.seedInjected};
       const merged=mergeData(localData,remote);
